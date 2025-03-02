@@ -5,43 +5,58 @@ import spacy
 import numpy as np
 import json
 import uuid
+import os
 
-# Initialize Flask app
 app = Flask(__name__)
 app.secret_key = "ubayog_secret_123"
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['SESSION_COOKIE_SECURE'] = False
+app.config.update(
+    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SECURE=False,
+    SESSION_COOKIE_HTTPONLY=True
+)
 
-# Enable CORS with credentials
 CORS(app, 
      origins=["http://localhost:8000"],
      supports_credentials=True,
-     methods=["POST", "OPTIONS"],
-     allow_headers=["Content-Type"])
+     methods=["POST", "OPTIONS", "GET"],
+     allow_headers=["Content-Type", "Authorization"],
+     expose_headers=["Content-Type", "X-Custom-Header"]
+)
 
-# Load NLP models
 nlp = spacy.load("en_core_web_sm")
 sbert_model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# Load mock database
-try:
-    with open('assets.json') as f:
+# Load or initialize assets
+ASSETS_FILE = 'assets.json'
+if os.path.exists(ASSETS_FILE):
+    with open(ASSETS_FILE) as f:
         assets = json.load(f)
-except FileNotFoundError:
+else:
     assets = []
 
-# Precompute embeddings
-asset_embeddings = {asset['id']: sbert_model.encode(asset['description']) for asset in assets}
+asset_embeddings = {asset['id']: sbert_model.encode(asset['description']) 
+                   for asset in assets}
 
-# Intent samples
-INTENTS = {
-    "search": ["find bikes", "show apartments", "search for tools"],
-    "list": ["i want to list my car", "add new property", "rent out equipment"],
-    "faq": ["what is ubayog?", "how do rewards work?"]
+INTENT_EXAMPLES = {
+    "search": [
+        "find bikes under $50",
+        "show apartments in paris",
+        "search for camera equipment",
+        "looking for power tools"
+    ],
+    "list": [
+        "i want to list my car",
+        "add new apartment listing",
+        "rent out my photography gear"
+    ],
+    "faq": [
+        "how do rewards work?",
+        "what payment methods do you accept?"
+    ]
 }
 
-# Precompute intent embeddings
-intent_embeddings = {intent: sbert_model.encode(examples) for intent, examples in INTENTS.items()}
+intent_embeddings = {intent: sbert_model.encode(examples) 
+                    for intent, examples in INTENT_EXAMPLES.items()}
 
 def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
@@ -50,57 +65,75 @@ def detect_intent(query):
     query_embed = sbert_model.encode([query])[0]
     scores = {}
     for intent, examples in intent_embeddings.items():
-        scores[intent] = max([cosine_similarity(query_embed, ex) for ex in examples])
+        scores[intent] = max(cosine_similarity(query_embed, ex) for ex in examples)
     return max(scores, key=scores.get)
 
 def extract_entities(query):
     doc = nlp(query)
+    asset_types = ['bike', 'apartment', 'car', 'tool', 'camera', 'equipment']
     return {
-        "location": [ent.text for ent in doc.ents if ent.label_ == "GPE"],
-        "price": [ent.text for ent in doc.ents if ent.label_ == "MONEY"],
-        "type": [ent.text for ent in doc.ents if ent.label_ == "PRODUCT"]
+        "location": [ent.text.lower() for ent in doc.ents if ent.label_ == "GPE"],
+        "price": [ent.text.lower() for ent in doc.ents if ent.label_ == "MONEY"],
+        "type": [token.text.lower() for token in doc 
+                if token.text.lower() in asset_types]
     }
 
 @app.route('/chat', methods=['POST', 'OPTIONS'])
-def chat():
+def chat_handler():
     if request.method == 'OPTIONS':
         return _build_cors_preflight_response()
     
-    user_msg = request.get_data(as_text=True)
+    user_msg = request.get_data(as_text=True).strip().lower()
     intent = detect_intent(user_msg)
     
-    # Handle listing flow
+    # Listing flow
     if intent == "list":
-        if 'listing_state' not in session:
-            session['listing_state'] = {
-                'step': 'asset_type',
-                'data': {}
-            }
-            return _cors_response({"text": "Let's list your asset! What type of asset are you listing? (e.g., bike, apartment)"})
-        
-        return handle_listing_flow(user_msg)
+        return handle_listing(user_msg)
     
-    # Handle search
+    # Search handling
     if intent == "search":
-        query_embed = sbert_model.encode([user_msg])[0]
-        scores = {asset['id']: cosine_similarity(query_embed, asset_embeddings[asset['id']]) 
-                 for asset in assets}
-        top_assets = sorted(assets, key=lambda x: -scores[x['id']])[:3]
-        return _cors_response({
-            "text": f"Found {len(top_assets)} results:",
-            "results": top_assets
-        })
+        return handle_search(user_msg)
     
-    return _cors_response({"text": "I can help you search assets or list new ones. Try asking 'Find bikes in Paris'!"})
+    return _cors_response({"text": "How can I help you today?"})
 
-def handle_listing_flow(user_msg):
+def handle_search(query):
+    filters = extract_entities(query)
+    
+    # Filter assets
+    filtered = []
+    for asset in assets:
+        type_match = not filters['type'] or any(
+            t in asset['type'].lower() for t in filters['type']
+        )
+        loc_match = not filters['location'] or any(
+            l in asset['location'].lower() for l in filters['location']
+        )
+        if type_match and loc_match:
+            filtered.append(asset)
+    
+    # Semantic ranking
+    query_embed = sbert_model.encode([query])[0]
+    scores = {a['id']: cosine_similarity(query_embed, asset_embeddings[a['id']]) 
+             for a in filtered}
+    results = sorted(filtered, key=lambda x: -scores[x['id']])[:3]
+    
+    return _cors_response({
+        "text": f"Found {len(results)} matching items:",
+        "results": results
+    })
+
+def handle_listing(user_msg):
+    if 'listing_state' not in session:
+        session['listing_state'] = {'step': 'type', 'data': {}}
+        return _cors_response({"text": "Let's list your item! What type of item is it?"})
+    
     state = session['listing_state']
     
-    if state['step'] == 'asset_type':
+    if state['step'] == 'type':
         state['data']['type'] = user_msg
         state['step'] = 'location'
         session.modified = True
-        return _cors_response({"text": "Great! Where is the asset located?"})
+        return _cors_response({"text": "Where is the item located?"})
     
     elif state['step'] == 'location':
         state['data']['location'] = user_msg
@@ -110,30 +143,41 @@ def handle_listing_flow(user_msg):
     
     elif state['step'] == 'price':
         state['data']['price'] = user_msg
-        new_asset = {
+        new_item = {
             "id": str(uuid.uuid4()),
-            "description": f"{state['data']['type']} in {state['data']['location']} for {state['data']['price']}/day",
+            "description": f"{state['data']['type']} in {state['data']['location']}",
             **state['data']
         }
-        assets.append(new_asset)
-        asset_embeddings[new_asset['id']] = sbert_model.encode(new_asset['description'])
+        
+        # Persist data
+        assets.append(new_item)
+        with open(ASSETS_FILE, 'w') as f:
+            json.dump(assets, f, indent=2)
+        
+        # Update embeddings
+        asset_embeddings[new_item['id']] = sbert_model.encode(new_item['description'])
         session.pop('listing_state', None)
+        
         return _cors_response({
-            "text": f"Asset listed successfully! ID: {new_asset['id']}",
-            "preview": new_asset
+            "text": "✅ Item listed successfully!",
+            "preview": new_item
         })
 
 def _build_cors_preflight_response():
     response = jsonify()
-    response.headers.add("Access-Control-Allow-Headers", "*")
-    response.headers.add("Access-Control-Allow-Methods", "*")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type")
     return response
 
 def _cors_response(data, status=200):
     response = jsonify(data)
     response.headers.add("Access-Control-Allow-Origin", "http://localhost:8000")
-    response.headers.add("Access-Control-Allow-Credentials", "true")
+    return response
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = 'http://localhost:8000'
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
     return response
 
 if __name__ == '__main__':
-    app.run(port=5000, debug=False)
+    app.run(port=5001, debug=False)

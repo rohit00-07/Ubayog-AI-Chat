@@ -1,74 +1,87 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Ubayog AI Chat</title>
+    <title>Ubayog AI Assistant</title>
     <style>
+        :root {
+            --primary: #2A5C82;
+            --secondary: #E8F1F5;
+        }
         body {
-            font-family: Arial, sans-serif;
             margin: 0;
             padding: 20px;
-            background-color: #f5f5f5;
+            font-family: 'Segoe UI', sans-serif;
+            background: var(--secondary);
         }
         .chat-container {
             max-width: 800px;
             margin: 0 auto;
             background: white;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-radius: 15px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
         .chat-messages {
-            height: 500px;
-            overflow-y: auto;
+            height: 60vh;
             padding: 20px;
+            overflow-y: auto;
         }
         .message {
-            margin: 10px 0;
-            padding: 10px 15px;
+            margin: 12px;
+            padding: 12px 20px;
             border-radius: 20px;
-            max-width: 70%;
+            max-width: 75%;
+            animation: fadeIn 0.3s ease;
         }
         .user-message {
-            background: #007bff;
+            background: var(--primary);
             color: white;
             margin-left: auto;
         }
         .bot-message {
-            background: #e9ecef;
-            color: black;
+            background: #f0f0f0;
             margin-right: auto;
         }
-        .asset-card {
-            border: 1px solid #ddd;
-            border-radius: 8px;
+        .listing-preview {
+            background: #e3f2fd;
+            border-left: 4px solid var(--primary);
             padding: 15px;
             margin: 10px 0;
         }
-        .input-container {
+        .input-area {
             display: flex;
             padding: 20px;
             border-top: 1px solid #ddd;
         }
         input {
             flex: 1;
-            padding: 10px;
+            padding: 12px;
             border: 1px solid #ddd;
-            border-radius: 5px;
+            border-radius: 25px;
             margin-right: 10px;
+            font-size: 16px;
         }
         button {
-            padding: 10px 20px;
-            background: #007bff;
+            padding: 12px 25px;
+            background: var(--primary);
             color: white;
             border: none;
-            border-radius: 5px;
+            border-radius: 25px;
             cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        button:hover {
+            opacity: 0.9;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: none; }
         }
     </style>
 </head>
 <body>
     <div class="chat-container">
         <div id="chat-messages" class="chat-messages"></div>
-        <div class="input-container">
+        <div class="input-area">
             <input type="text" id="user-input" placeholder="Type your message...">
             <button onclick="sendMessage()">Send</button>
         </div>
@@ -78,35 +91,40 @@
         const chatDiv = document.getElementById('chat-messages');
         const input = document.getElementById('user-input');
 
-        function addMessage(text, isUser) {
+        function createMessageElement(text, isUser) {
             const div = document.createElement('div');
             div.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
             div.textContent = text;
-            chatDiv.appendChild(div);
-            chatDiv.scrollTop = chatDiv.scrollHeight;
+            return div;
         }
 
-        function addAssetCard(asset) {
-            const card = document.createElement('div');
-            card.className = 'asset-card';
-            card.innerHTML = `
-                <h3>${asset.type.charAt(0).toUpperCase() + asset.type.slice(1)} in ${asset.location}</h3>
-                <p>💰 Price: $${asset.price}/day</p>
-                <p>📝 ${asset.description}</p>
-            `;
-            chatDiv.appendChild(card);
-            chatDiv.scrollTop = chatDiv.scrollHeight;
+        function showSearchResults(results) {
+            const container = document.createElement('div');
+            results.forEach(item => {
+                const card = document.createElement('div');
+                card.className = 'listing-preview';
+                card.innerHTML = `
+                    <h3>${item.type.toUpperCase()} • ${item.location}</h3>
+                    <p>${item.description}</p>
+                    <p style="color: var(--primary); margin-top: 8px;">
+                        💰 $${item.price}/day
+                    </p>
+                `;
+                container.appendChild(card);
+            });
+            chatDiv.appendChild(container);
         }
 
         async function sendMessage() {
             const text = input.value.trim();
             if (!text) return;
             
-            addMessage(text, true);
+            // Add user message
+            chatDiv.appendChild(createMessageElement(text, true));
             input.value = '';
             
             try {
-                const response = await fetch('http://127.0.0.1:5000/chat', {
+                const response = await fetch('http://127.0.0.1:5001/chat', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'text/plain',
@@ -114,25 +132,40 @@
                     },
                     body: text,
                     credentials: 'include',
+                    mode: 'cors'
                 });
                 
                 const data = await response.json();
                 
+                // Add bot response
+                const botDiv = createMessageElement(data.text, false);
+                chatDiv.appendChild(botDiv);
+                
+                // Show results if available
                 if (data.results) {
-                    addMessage(data.text, false);
-                    data.results.forEach(asset => addAssetCard(asset));
-                } else if (data.preview) {
-                    addMessage(data.text, false);
-                    addAssetCard(data.preview);
-                } else {
-                    addMessage(data.text, false);
+                    showSearchResults(data.results);
                 }
+                if (data.preview) {
+                    const previewDiv = document.createElement('div');
+                    previewDiv.className = 'listing-preview';
+                    previewDiv.innerHTML = `
+                        <h3>NEW LISTING • ${data.preview.type.toUpperCase()}</h3>
+                        <p>Location: ${data.preview.location}</p>
+                        <p>Price: $${data.preview.price}/day</p>
+                    `;
+                    chatDiv.appendChild(previewDiv);
+                }
+                
             } catch (error) {
-                addMessage("Sorry, I'm having trouble connecting. Please try again.", false);
+                const errorDiv = createMessageElement(
+                    "⚠️ Connection error. Please try again.", false
+                );
+                chatDiv.appendChild(errorDiv);
             }
+            
+            chatDiv.scrollTop = chatDiv.scrollHeight;
         }
 
-        // Handle Enter key
         input.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') sendMessage();
         });
