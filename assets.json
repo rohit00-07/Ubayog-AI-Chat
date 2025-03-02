@@ -1,0 +1,16 @@
+[
+    {
+        "id": "1",
+        "type": "bike",
+        "location": "Paris",
+        "price": 25,
+        "description": "Mountain bike available near Eiffel Tower"
+    },
+    {
+        "id": "2",
+        "type": "camera",
+        "location": "London",
+        "price": 40,
+        "description": "Professional DSLR camera kit with lenses"
+    }
+]
